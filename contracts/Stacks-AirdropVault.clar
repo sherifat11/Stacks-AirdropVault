@@ -85,3 +85,57 @@
     (var-set reclaim-period-length new-period)
     (log-event "period-updated" "reclaim period changed")
     (ok new-period)))
+
+
+;; Airdrop distribution function
+
+(define-public (claim-airdrop-tokens)
+  (let (
+    (recipient-address tx-sender)
+    (claim-amount (var-get airdrop-amount-per-recipient))
+  )
+    (asserts! (var-get is-airdrop-active) ERROR-AIRDROP-NOT-ACTIVE)
+    (asserts! (is-some (map-get? eligible-airdrop-recipients recipient-address)) ERROR-RECIPIENT-NOT-ELIGIBLE)
+    (asserts! (is-none (map-get? claimed-airdrop-amounts recipient-address)) ERROR-AIRDROP-ALREADY-CLAIMED)
+    (asserts! (<= claim-amount (ft-get-balance airdrop-distribution-token CONTRACT-OWNER)) ERROR-INSUFFICIENT-TOKEN-BALANCE)
+    (try! (ft-transfer? airdrop-distribution-token claim-amount CONTRACT-OWNER recipient-address))
+    (map-set claimed-airdrop-amounts recipient-address claim-amount)
+    (var-set total-tokens-distributed (+ (var-get total-tokens-distributed) claim-amount))
+    (log-event "tokens-claimed" "tokens claimed")
+    (ok claim-amount)))
+
+;; Token reclaim function
+
+(define-public (reclaim-unclaimed-tokens)
+  (let (
+    (current-block stacks-block-height)
+    (reclaim-allowed-after (+ (var-get airdrop-start-block) (var-get reclaim-period-length)))
+  )
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
+    (asserts! (>= current-block reclaim-allowed-after) ERROR-RECLAIM-PERIOD-NOT-ENDED)
+    (let (
+      (total-minted (ft-get-supply airdrop-distribution-token))
+      (total-claimed (var-get total-tokens-distributed))
+      (unclaimed-amount (- total-minted total-claimed))
+    )
+      (try! (ft-burn? airdrop-distribution-token unclaimed-amount CONTRACT-OWNER))
+      (log-event "tokens-reclaimed" "unclaimed tokens burned")
+      (ok unclaimed-amount))))
+
+
+
+(define-public (execute-emergency-withdrawal (recipient principal))
+  (let (
+    (current-block stacks-block-height)
+    (timelock (var-get emergency-timelock))
+    (balance (ft-get-balance airdrop-distribution-token CONTRACT-OWNER))
+  )
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
+    (asserts! (> timelock u0) (err u111))
+    (asserts! (>= current-block timelock) (err u112))
+    (try! (ft-transfer? airdrop-distribution-token balance CONTRACT-OWNER recipient))
+    (var-set is-airdrop-active false)
+    (var-set emergency-timelock u0)
+    (log-event "emerg-executed" "funds withdrawn")
+    (ok balance)))
+
