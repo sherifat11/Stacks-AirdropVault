@@ -139,3 +139,99 @@
     (log-event "emerg-executed" "funds withdrawn")
     (ok balance)))
 
+
+
+;; Read-only functions
+
+(define-read-only (get-airdrop-active-status)
+  (var-get is-airdrop-active))
+
+;; Additional read-only functions for new features
+(define-read-only (get-pause-status)
+  (var-get is-paused))
+
+(define-read-only (get-tier-multiplier (tier-level uint))
+  (default-to u1 (map-get? tier-multipliers tier-level)))
+
+(define-read-only (get-emergency-timelock)
+  (var-get emergency-timelock))
+
+(define-read-only (is-recipient-eligible (recipient-address principal))
+  (default-to false (map-get? eligible-airdrop-recipients recipient-address)))
+
+(define-read-only (has-recipient-claimed-airdrop (recipient-address principal))
+  (is-some (map-get? claimed-airdrop-amounts recipient-address)))
+
+(define-read-only (get-recipient-claimed-amount (recipient-address principal))
+  (default-to u0 (map-get? claimed-airdrop-amounts recipient-address)))
+
+(define-read-only (get-total-tokens-distributed)
+  (var-get total-tokens-distributed))
+
+(define-read-only (get-airdrop-amount-per-recipient)
+  (var-get airdrop-amount-per-recipient))
+
+(define-read-only (get-reclaim-period)
+  (var-get reclaim-period-length))
+
+(define-read-only (get-airdrop-start-block)
+  (var-get airdrop-start-block))
+
+(define-read-only (get-event (event-id uint))
+  (map-get? contract-events event-id))
+
+;; Contract initialization
+
+(begin
+  (ft-mint? airdrop-distribution-token u1000000000 CONTRACT-OWNER))
+
+;; 1. Pause/Resume functionality
+(define-data-var is-paused bool false)
+
+(define-public (pause-airdrop)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
+    (asserts! (not (var-get is-paused)) (err u109))
+    (var-set is-paused true)
+    (var-set is-airdrop-active false)
+    (log-event "airdrop-paused" "distribution paused")
+    (ok true)))
+
+(define-public (resume-airdrop)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
+    (asserts! (var-get is-paused) (err u110))
+    (var-set is-paused false)
+    (var-set is-airdrop-active true)
+    (log-event "airdrop-resumed" "distribution resumed")
+    (ok true)))
+
+;; 2. Tiered airdrop distribution
+(define-map tier-multipliers uint uint)
+
+(define-public (set-tier-multiplier (tier-level uint) (multiplier uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
+    (asserts! (> multiplier u0) ERROR-INVALID-AMOUNT)
+    (map-set tier-multipliers tier-level multiplier)
+    (log-event "tier-updated" "tier multiplier set")
+    (ok multiplier)))
+
+(define-public (claim-tiered-airdrop (tier-level uint))
+  (let (
+    (recipient-address tx-sender)
+    (base-amount (var-get airdrop-amount-per-recipient))
+    (tier-multiplier (default-to u1 (map-get? tier-multipliers tier-level)))
+    (claim-amount (* base-amount tier-multiplier))
+  )
+    (asserts! (var-get is-airdrop-active) ERROR-AIRDROP-NOT-ACTIVE)
+    (asserts! (not (var-get is-paused)) (err u109))
+    (asserts! (is-some (map-get? eligible-airdrop-recipients recipient-address)) ERROR-RECIPIENT-NOT-ELIGIBLE)
+    (asserts! (is-none (map-get? claimed-airdrop-amounts recipient-address)) ERROR-AIRDROP-ALREADY-CLAIMED)
+    (asserts! (<= claim-amount (ft-get-balance airdrop-distribution-token CONTRACT-OWNER)) ERROR-INSUFFICIENT-TOKEN-BALANCE)
+    (try! (ft-transfer? airdrop-distribution-token claim-amount CONTRACT-OWNER recipient-address))
+    (map-set claimed-airdrop-amounts recipient-address claim-amount)
+    (var-set total-tokens-distributed (+ (var-get total-tokens-distributed) claim-amount))
+    (log-event "tiered-claim" "tokens claimed with tier")
+    (ok claim-amount)))
+
